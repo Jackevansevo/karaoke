@@ -17,6 +17,10 @@ type result struct {
 	href  string
 }
 
+// [TODO] Refactor out common logic
+// [TODO] Options to capture STDOUT and pipe shit elsewhere (e.g. less)
+// [TODO] Link with dbus
+
 const AZLYRICS_URL = "https://search.azlyrics.com/search.php"
 
 var artist = flag.String("artist", "", "Artist Name")
@@ -40,7 +44,7 @@ func main() {
 	flag.Parse()
 
 	if *artist == "" || *song == "" {
-		fmt.Fprintf(os.Stderr, "error: missing artist/song info")
+		fmt.Fprintln(os.Stderr, "error: missing artist/song info")
 		os.Exit(1)
 	}
 
@@ -60,6 +64,7 @@ func main() {
 	}
 
 	results := make([]result, 0)
+	var chosen result
 
 	doc.Find("table a").Each(func(i int, s *goquery.Selection) {
 		href, _ := s.Attr("href")
@@ -68,51 +73,67 @@ func main() {
 		}
 	})
 
-	library := tui.NewList()
-	library.SetFocused(true)
-	library.SetSelected(0)
+	switch len(results) {
+	case 0:
+		fmt.Fprintln(os.Stderr, "error: song not found")
+		os.Exit(1)
+	case 1:
+		chosen = results[0]
+	default:
+		list := tui.NewList()
+		list.SetFocused(true)
+		list.SetSelected(0)
 
-	for _, result := range results {
-		library.AddItems(result.title)
+		for _, result := range results {
+			list.AddItems(result.title)
+		}
+
+		status := tui.NewStatusBar("Select a song from the list")
+		root := tui.NewVBox(list, status)
+
+		ui := tui.New(root)
+
+		ui.SetKeybinding("Esc", func() { ui.Quit() })
+		ui.SetKeybinding("q", func() { ui.Quit() })
+
+		// Quit once selected
+		list.OnItemActivated(func(t *tui.List) {
+			chosen = results[t.Selected()]
+			ui.Quit()
+		})
+
+		if err := ui.Run(); err != nil {
+			panic(err)
+		}
 	}
 
-	status := tui.NewStatusBar("Select a song from the list")
-	root := tui.NewVBox(library, status)
+	// [TODO] Devise way of printing stuff to STDOUT
 
+	doc, err = goquery.NewDocument(chosen.href)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	lyrics := doc.Find("div.ringtone").NextAllFiltered("div").First()
+	label := tui.NewLabel(strings.TrimSpace(lyrics.Text()))
+
+	s := tui.NewScrollArea(label)
+	scrollBox := tui.NewVBox(s)
+	scrollBox.SetTitle(chosen.title + " " + "Lyrics")
+	scrollBox.SetBorder(true)
+
+	status := tui.NewStatusBar("Press q to quit")
+	root := tui.NewVBox(scrollBox, status)
 	ui := tui.New(root)
 
-	library.OnItemActivated(func(t *tui.List) {
-		ui.Update(func() {
+	ui.SetKeybinding("Up", func() { s.Scroll(0, -1) })
+	ui.SetKeybinding("k", func() { s.Scroll(0, -1) })
 
-			chosen := results[t.Selected()]
+	ui.SetKeybinding("Down", func() { s.Scroll(0, 1) })
+	ui.SetKeybinding("j", func() { s.Scroll(0, 1) })
 
-			doc, err = goquery.NewDocument(chosen.href)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			lyrics := doc.Find("div.ringtone").NextAllFiltered("div").First()
-			label := tui.NewLabel(strings.TrimSpace(lyrics.Text()))
-			s := tui.NewScrollArea(label)
-			scrollBox := tui.NewVBox(s)
-			scrollBox.SetTitle(chosen.title + " " + "Lyrics")
-			scrollBox.SetBorder(true)
-
-			ui.SetKeybinding("Up", func() { s.Scroll(0, -1) })
-			ui.SetKeybinding("k", func() { s.Scroll(0, -1) })
-
-			ui.SetKeybinding("Down", func() { s.Scroll(0, 1) })
-			ui.SetKeybinding("j", func() { s.Scroll(0, 1) })
-
-			ui.SetKeybinding("Ctrl+U", func() { s.Scroll(0, -10) })
-			ui.SetKeybinding("Ctrl+D", func() { s.Scroll(0, 10) })
-
-			root.Remove(0)
-			status.SetText("Press q to quit")
-			root.Prepend(scrollBox)
-
-		})
-	})
+	ui.SetKeybinding("Ctrl+U", func() { s.Scroll(0, -10) })
+	ui.SetKeybinding("Ctrl+D", func() { s.Scroll(0, 10) })
 
 	ui.SetKeybinding("Esc", func() { ui.Quit() })
 	ui.SetKeybinding("q", func() { ui.Quit() })
